@@ -206,6 +206,7 @@ def aircraft_replacement_recommendation(engines, engine_cost, labor_cost, fix_ti
     recs = []
     if any_critical:
         for e, value in zip(engines, values):
+            # engine = e['engine']
             if e['status'] == 'Critical':
                 replace, reason = True, 'Engine is critical.'
             elif value < downtime_cost:

@@ -325,11 +325,14 @@ for col, (_, eng), rec in zip(st.columns(len(aircraft_engines)), aircraft_engine
         else:
             st.success(f"Keep flying. {rec['reason']}")
 
+min_rul = min([eng['Predicted RUL'] for _, eng in aircraft_engines.iterrows()])
+check_back = min_rul - 25
+
 
 if True in [engine['replace'] for engine in advice['engines']]:
     st.error(f'GROUND {aircraft_id} NOW', title='Action Recommendation')
 else:
-    st.success(f'No action necessary', title='Action Recommendation')
+    st.success(f'No action necessary, reevaluate in {check_back} cycles', title='Action Recommendation')
 
 # ---------------------------------------------------------------- Engine detail
 st.divider()
