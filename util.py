@@ -157,3 +157,24 @@ def local_feature_importance(model, data, feature_cols):
 
     results = results.sort_values('importance', ascending=False)
     return results
+
+AVG_HRS_PER_CYCLE=5
+
+def calculate_reactive_maintenance_cost(labor_cost, fix_time, inv_time, aircraft_ev):
+    missed_cycles = (inv_time + fix_time) / AVG_HRS_PER_CYCLE
+
+
+    return ((labor_cost + aircraft_ev) * (fix_time + inv_time))
+
+
+def calculate_predictive_maintenance_cost(labor_cost, fix_time, aircraft_ev, engine_cost, engine_life, missed_cycles):
+    """
+    engine_life: per-engine estimated total life in cycles (age + predicted RUL).
+    missed_cycles: cycles of life thrown away per engine by replacing early (scalar or per-engine array).
+    """
+    engine_life = np.asarray(engine_life, dtype=float)
+    # Early replacement doesn't ground the aircraft; it throws away unused engine life,
+    # so missed cycles are priced at each engine's cost per cycle, not the aircraft's earnings.
+    engine_cost_per_cycle = engine_cost / engine_life
+    downtime = (labor_cost + aircraft_ev) * fix_time * len(engine_life)
+    return downtime + np.sum(engine_cost_per_cycle * missed_cycles)

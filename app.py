@@ -4,7 +4,8 @@ import numpy as np
 import tensorflow as tf
 from util import (
     nasa_loss, local_feature_importance, create_windows,
-    mc_dropout_predict, scale_interval, trajectory_stability,
+    mc_dropout_predict, scale_interval, trajectory_stability, calculate_reactive_maintenance_cost,
+    calculate_predictive_maintenance_cost
 )
 import json
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error
@@ -115,7 +116,15 @@ def build_fleet_table(_model, test, true_rul, interval_scale):
     })
 
     fleet = fleet.sort_values(['Replace In (cycles)', 'Engine']).reset_index(drop=True)
-    return fleet, rmse, margin, window_index
+    return fleet, rmse, margin, window_index, mae
+
+# @st.cache_data
+# def calculate_missed_cycles(_model, test, true_rul, interval_scale):
+#     windows, _, window_index = create_windows(test, feature_cols)
+#     window_index['predicted_rul'] = _model.preict(windows, batch_size=1024, verbose=0).flatten()
+#     latest = window_index.groupby('engine').tail(1).index.to_numpy()
+#     raw_preds = window_index.loc[latest, 'predicted_rul'].to_numpy()
+
 
 
 @st.cache_data
@@ -131,7 +140,7 @@ model = load_model()
 test, true_rul = load_data()
 calibration = load_calibration()
 interval_scale = calibration['interval_scale'] if calibration else 1.0
-fleet, rmse, margin, index = build_fleet_table(model, test, true_rul, interval_scale)
+fleet, rmse, margin, index, mae = build_fleet_table(model, test, true_rul, interval_scale)
 
 
 st.title('Engine Degradation Predictor')
@@ -176,6 +185,64 @@ st.dataframe(
         ),
     },
 )
+
+st.divider()
+
+st.header('Fleet Maintenance Cost Calculator')
+
+col1, col2, col3, col4 = st.columns(4)
+labor_cost = col1.number_input('Labor Cost ($/hr)')
+fix_time = col2.number_input('Time to Fix (hrs)')
+inv_time = col3.number_input('Time for Causal Investigation (hrs)')
+aircraft_ev = col4.number_input('Aircraft Economic Value ($/hr)')
+engine_cost = st.number_input('Engine Cost ($)')
+reactive_cost = calculate_reactive_maintenance_cost(
+    labor_cost,
+    fix_time,
+    inv_time,
+    aircraft_ev
+) * len(fleet)
+
+# Each engine's estimated total life, from its current age plus the model's predicted RUL
+engine_life = fleet['Age (cycles)'] + fleet['Predicted RUL']
+missed_cycles = mae  # per engine
+
+predictive_cost = calculate_predictive_maintenance_cost(
+    labor_cost,
+    fix_time,
+    aircraft_ev,
+    engine_cost,
+    engine_life,
+    missed_cycles,
+)
+
+
+def format_dollars(amount):
+    sign = '-' if amount < 0 else ''
+    amount = abs(amount)
+    if amount >= 1e6:
+        return f'{sign}${amount / 1e6:.2f}M'
+    return f'{sign}${amount / 1e3:.2f}k'
+
+
+col1, col2, col3 = st.columns(3)
+col1.metric('Reactive Maint. Cost', format_dollars(reactive_cost))
+col2.metric('Predictive Maint. Cost', format_dollars(predictive_cost))
+
+savings = reactive_cost - predictive_cost
+perc = 100 * savings / reactive_cost
+arrow = 'down' if savings >= 0 else 'up'
+col3.metric(
+    'Predictive Savings',
+    format_dollars(savings),
+    delta=f'{perc:.2f}%',
+    delta_arrow=arrow,
+)
+
+
+
+
+
 
 
 
