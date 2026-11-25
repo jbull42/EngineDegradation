@@ -178,3 +178,53 @@ def calculate_predictive_maintenance_cost(labor_cost, fix_time, aircraft_ev, eng
     engine_cost_per_cycle = engine_cost / engine_life
     downtime = (labor_cost + aircraft_ev) * fix_time * len(engine_life)
     return downtime + np.sum(engine_cost_per_cycle * missed_cycles)
+
+
+def remaining_life_value(age, predicted_rul, engine_cost):
+    """Dollar value of an engine's predicted remaining life: cost per cycle (from age + RUL) x RUL."""
+    engine_life = age + predicted_rul
+    return engine_cost / engine_life * predicted_rul if engine_life > 0 else 0.0
+
+
+def aircraft_replacement_recommendation(engines, engine_cost, labor_cost, fix_time, aircraft_ev):
+    """
+    Decide which of an aircraft's engines to replace now.
+
+    engines: list of dicts with 'status', 'age' and 'predicted_rul', one per engine.
+
+    - If any engine is critical, it is replaced, and the aircraft is going down anyway.
+      Each non-critical engine is also replaced if its remaining life is worth less than
+      the future downtime event that replacing it now (in the same downtime) avoids.
+    - If no engine is critical, replacing now needs its own downtime event. Both engines
+      are replaced together if their combined remaining life is worth less than one
+      downtime event (one event now instead of two later); otherwise both are kept.
+    """
+    downtime_cost = (labor_cost + aircraft_ev) * fix_time
+    values = [remaining_life_value(e['age'], e['predicted_rul'], engine_cost) for e in engines]
+    any_critical = any(e['status'] == 'Critical' for e in engines)
+
+    recs = []
+    if any_critical:
+        for e, value in zip(engines, values):
+            if e['status'] == 'Critical':
+                replace, reason = True, 'Engine is critical.'
+            elif value < downtime_cost:
+                replace, reason = True, ('Replacing it during the critical engine\'s downtime is cheaper '
+                                         'than keeping its remaining life and grounding the aircraft again later.')
+            else:
+                replace, reason = False, ('Its remaining life is worth more than the future downtime '
+                                          'saved by replacing it alongside the critical engine.')
+            recs.append({'replace': replace, 'reason': reason, 'rul_value': value})
+    else:
+        replace_both = sum(values) < downtime_cost
+        reason = ('Combined remaining life of both engines is worth less than one downtime event, '
+                  'so replace both together now.' if replace_both else
+                  'Combined remaining life of both engines is worth more than one downtime event.')
+        recs = [{'replace': replace_both, 'reason': reason, 'rul_value': v} for v in values]
+
+    return {
+        'engines': recs,
+        'downtime_cost': downtime_cost,
+        'combined_rul_value': sum(values),
+        'any_critical': any_critical,
+    }

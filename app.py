@@ -5,7 +5,7 @@ import tensorflow as tf
 from util import (
     nasa_loss, local_feature_importance, create_windows,
     mc_dropout_predict, scale_interval, trajectory_stability, calculate_reactive_maintenance_cost,
-    calculate_predictive_maintenance_cost
+    calculate_predictive_maintenance_cost, aircraft_replacement_recommendation
 )
 import json
 from sklearn.metrics import root_mean_squared_error, mean_absolute_error
@@ -102,8 +102,12 @@ def build_fleet_table(_model, test, true_rul, interval_scale):
     predicted_rul = np.maximum(0, np.floor(raw_predictions)).astype(int)
     replace_in = np.maximum(0, np.floor(predicted_rul - margin)).astype(int)
 
+    engine_ids = age.index.to_numpy()
+
     fleet = pd.DataFrame({
-        'Engine': age.index.to_numpy(),
+        # Arbitrary pairing: engines 1-2 go on aircraft 1, engines 3-4 on aircraft 2, etc.
+        'Aircraft': [f'AC-{(e - 1) // 2 + 1:03d}' for e in engine_ids],
+        'Engine': engine_ids,
         'Age (cycles)': age.to_numpy(),
         'Predicted RUL': predicted_rul,
         'RUL Low (90%)': np.maximum(0, np.floor(uncertainty['mc_lower'])).astype(int),
@@ -179,9 +183,27 @@ st.dataframe(
     styled,
     hide_index=True,
     use_container_width=True,
+    # Short labels + 'small' widths so all columns fit without horizontal scrolling;
+    # the full meaning is in each column's hover tooltip.
     column_config={
+        'Aircraft': st.column_config.TextColumn('Aircraft', width='small'),
+        'Engine': st.column_config.NumberColumn('Engine', width='small'),
+        'Age (cycles)': st.column_config.NumberColumn(
+            'Age', width='small', help='Age (cycles)'
+        ),
+        'Predicted RUL': st.column_config.NumberColumn(
+            'Pred. RUL', width='small', help='Predicted remaining useful life (cycles)'
+        ),
         'Wear (%)': st.column_config.ProgressColumn(
-            'Wear (%)', format='%.0f%%', min_value=0, max_value=100
+            'Wear', format='%.0f%%', min_value=0, max_value=100, width='small',
+            help='Age as a share of estimated total life'
+        ),
+        'Status': st.column_config.TextColumn('Status', width='small'),
+        'Replace In (cycles)': st.column_config.NumberColumn(
+            'Replace In', width='small', help='Cycles until replacement (predicted RUL minus safety buffer)'
+        ),
+        'Replace By Cycle': st.column_config.NumberColumn(
+            'Replace By', width='small', help='Engine age (cycles) at which to replace'
         ),
     },
 )
@@ -196,6 +218,12 @@ fix_time = col2.number_input('Time to Fix (hrs)')
 inv_time = col3.number_input('Time for Causal Investigation (hrs)')
 aircraft_ev = col4.number_input('Aircraft Economic Value ($/hr)')
 engine_cost = st.number_input('Engine Cost ($)')
+
+
+
+
+
+
 reactive_cost = calculate_reactive_maintenance_cost(
     labor_cost,
     fix_time,
@@ -225,26 +253,83 @@ def format_dollars(amount):
     return f'{sign}${amount / 1e3:.2f}k'
 
 
+
+
+
 col1, col2, col3 = st.columns(3)
 col1.metric('Reactive Maint. Cost', format_dollars(reactive_cost))
 col2.metric('Predictive Maint. Cost', format_dollars(predictive_cost))
 
 savings = reactive_cost - predictive_cost
-perc = 100 * savings / reactive_cost
-arrow = 'down' if savings >= 0 else 'up'
+if reactive_cost > 0:
+    # Shown as the change in cost (negative = cheaper), so a saving gets a down arrow;
+    # 'inverse' colors that down arrow green and a cost increase red.
+    cost_change = -100 * savings / reactive_cost
+    delta = f'{cost_change:.2f}%'
+else:
+    delta = None
 col3.metric(
     'Predictive Savings',
     format_dollars(savings),
-    delta=f'{perc:.2f}%',
-    delta_arrow=arrow,
+    delta=delta,
+    delta_color='inverse',
 )
 
 
 
 
+st.divider()
 
 
 
+# ------------------------------------------------- Aircraft replacement advice
+st.header('Aircraft Replacement Recommendation')
+
+aircraft_id = st.selectbox('Choose an aircraft:', sorted(fleet['Aircraft'].unique()))
+aircraft_engines = fleet[fleet['Aircraft'] == aircraft_id].sort_values('Engine')
+
+advice = aircraft_replacement_recommendation(
+    [
+        {'status': e['Status'], 'age': e['Age (cycles)'], 'predicted_rul': e['Predicted RUL']}
+        for _, e in aircraft_engines.iterrows()
+    ],
+    engine_cost,
+    labor_cost,
+    fix_time,
+    aircraft_ev,
+)
+
+if advice['any_critical']:
+    st.caption(
+        f"A critical engine grounds the aircraft now; replacing another engine in the same downtime "
+        f"avoids a future downtime event worth {format_dollars(advice['downtime_cost'])}."
+    )
+else:
+    st.caption(
+        f"No critical engines. Replacing now needs its own downtime event "
+        f"({format_dollars(advice['downtime_cost'])}), so both engines are evaluated together: "
+        f"combined remaining life is worth {format_dollars(advice['combined_rul_value'])}."
+    )
+
+for col, (_, eng), rec in zip(st.columns(len(aircraft_engines)), aircraft_engines.iterrows(), advice['engines']):
+    with col:
+        st.markdown(
+            f"**Engine {eng['Engine']}** · "
+            f"<span style='color: {STATUS_COLORS[eng['Status']]}; font-weight: 600'>{eng['Status']}</span>",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Predicted RUL: {eng['Predicted RUL']} cycles")
+        st.write(f"Value of remaining life: {format_dollars(rec['rul_value'])}")
+        if rec['replace']:
+            st.error(f"Replace now. {rec['reason']}")
+        else:
+            st.success(f"Keep flying. {rec['reason']}")
+
+
+if True in [engine['replace'] for engine in advice['engines']]:
+    st.error(f'GROUND {aircraft_id} NOW', title='Action Recommendation')
+else:
+    st.success(f'No action necessary', title='Action Recommendation')
 
 # ---------------------------------------------------------------- Engine detail
 st.divider()
